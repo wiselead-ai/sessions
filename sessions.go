@@ -22,6 +22,7 @@ const (
 
 type (
 	openaiCli interface {
+		GetAssistant(ctx context.Context, assistantID string) (*openaicli.Assistant, error)
 		AddMessage(ctx context.Context, in openaicli.CreateMessageInput) error
 		RunThread(ctx context.Context, threadID, assistantID string) (*openaicli.Run, error)
 		WaitForRun(ctx context.Context, threadID, runID string) error
@@ -57,17 +58,22 @@ type SessionManager struct {
 	sessionTimeout  time.Duration
 }
 
-func NewSessionManager(assistant *openaicli.Assistant, openaiCli openaiCli) *SessionManager {
+func NewSessionManager(assistantID string, openaiCli openaiCli) (*SessionManager, error) {
+	assist, err := openaiCli.GetAssistant(context.Background(), assistantID)
+	if err != nil {
+		return nil, fmt.Errorf("could not get assistant: %w", err)
+	}
+
 	sm := &SessionManager{
 		sessions:        make(map[string]*Session),
-		assistant:       assistant,
+		assistant:       assist,
 		openaiCli:       openaiCli,
 		cleanupInterval: 1 * time.Hour,
 		sessionTimeout:  24 * time.Hour,
 	}
 
 	go sm.cleanupLoop()
-	return sm
+	return sm, nil
 }
 
 func (sm *SessionManager) cleanupLoop() {
