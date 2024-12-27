@@ -48,7 +48,7 @@ func createLead(ctx context.Context, db db, trelloCli trelloClient, input *creat
 			now.Format("02/01/2006 às 15:04"),
 		)
 
-		if err := trelloCli.CreateCard(trello.TrelloCard{
+		if err := trelloCli.CreateCard(ctx, trello.TrelloCard{
 			Name:        input.Name,
 			Description: description,
 			ListID:      newLeadsTrelloLane,

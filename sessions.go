@@ -34,7 +34,7 @@ type (
 	}
 
 	trelloClient interface {
-		CreateCard(card trello.TrelloCard) error
+		CreateCard(ctx context.Context, card trello.TrelloCard) error
 	}
 
 	db interface {
@@ -49,6 +49,7 @@ type (
 		CollectedName  string
 	}
 )
+
 type SessionManager struct {
 	mu              sync.RWMutex
 	sessions        map[string]*Session
