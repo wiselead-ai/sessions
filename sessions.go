@@ -55,11 +55,13 @@ type SessionManager struct {
 	sessions        map[string]*Session
 	assistant       *openai.Assistant
 	openaiCli       openaiClient
+	trelloCli       trelloClient
+	db              db
 	cleanupInterval time.Duration
 	sessionTimeout  time.Duration
 }
 
-func NewSessionManager(assistantID string, openaiCli openaiClient) (*SessionManager, error) {
+func NewSessionManager(assistantID string, db db, openaiCli openaiClient, trelloCli trelloClient) (*SessionManager, error) {
 	assist, err := openaiCli.GetAssistant(context.Background(), assistantID)
 	if err != nil {
 		return nil, fmt.Errorf("could not get assistant: %w", err)
@@ -69,6 +71,8 @@ func NewSessionManager(assistantID string, openaiCli openaiClient) (*SessionMana
 		sessions:        make(map[string]*Session),
 		assistant:       assist,
 		openaiCli:       openaiCli,
+		trelloCli:       trelloCli,
+		db:              db,
 		cleanupInterval: 1 * time.Hour,
 		sessionTimeout:  24 * time.Hour,
 	}
@@ -98,7 +102,7 @@ func (sm *SessionManager) cleanup() {
 	}
 }
 
-func (sm *SessionManager) SendMessage(ctx context.Context, db db, trelloCli trelloClient, userID, message string) (string, error) {
+func (sm *SessionManager) SendMessage(ctx context.Context, userID, message string) (string, error) {
 	session, err := sm.getOrCreateSession(ctx, userID)
 	if err != nil {
 		return "", fmt.Errorf("could not get or create session: %w", err)
@@ -124,13 +128,13 @@ func (sm *SessionManager) SendMessage(ctx context.Context, db db, trelloCli trel
 		return "", fmt.Errorf("could not run thread: %w", err)
 	}
 
-	if err := sm.processRun(ctx, db, trelloCli, session.ThreadID, run.ID); err != nil {
+	if err := sm.processRun(ctx, session.ThreadID, run.ID); err != nil {
 		return "", err
 	}
 	return sm.getAssistantResponse(ctx, session.ThreadID)
 }
 
-func (sm *SessionManager) processRun(ctx context.Context, db db, trelloCli trelloClient, threadID, runID string) error {
+func (sm *SessionManager) processRun(ctx context.Context, threadID, runID string) error {
 	for {
 		currentRun, err := sm.openaiCli.GetRun(ctx, threadID, runID)
 		if err != nil {
@@ -144,7 +148,7 @@ func (sm *SessionManager) processRun(ctx context.Context, db db, trelloCli trell
 			if currentRun.RequiredAction == nil {
 				return fmt.Errorf("invalid state: requires_action but no action specified")
 			}
-			if err := sm.handleFunctionCalling(ctx, db, trelloCli, threadID, currentRun); err != nil {
+			if err := sm.handleFunctionCalling(ctx, threadID, currentRun); err != nil {
 				return fmt.Errorf("could not handle function calling: %w", err)
 			}
 			time.Sleep(1 * time.Second)
@@ -186,7 +190,7 @@ func (sm *SessionManager) getAssistantResponse(ctx context.Context, threadID str
 	return finalResponse.String(), nil
 }
 
-func (sm *SessionManager) handleFunctionCalling(ctx context.Context, db db, trelloCli trelloClient, threadID string, run *openai.Run) error {
+func (sm *SessionManager) handleFunctionCalling(ctx context.Context, threadID string, run *openai.Run) error {
 	if run.RequiredAction == nil {
 		return nil
 	}
@@ -248,7 +252,7 @@ func (sm *SessionManager) handleFunctionCalling(ctx context.Context, db db, trel
 				return fmt.Errorf("no session found for thread %s", threadID)
 			}
 
-			if err := createLead(ctx, db, trelloCli, &createLeadInput{
+			if err := sm.createLead(ctx, &createLeadInput{
 				Name: args.Name,
 				// Clean up the phone number by removing the WhatsApp suffix.
 				Phone: strings.Split(strings.Split(userPhone, "@")[0], ":")[0],

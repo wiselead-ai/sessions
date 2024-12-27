@@ -97,7 +97,11 @@ func TestNewSessionManager(t *testing.T) {
 				},
 			}
 
-			sm, err := NewSessionManager(tc.assistantID, &openaiCli)
+			trelloCli := mockTrelloClient{}
+
+			db := mockDB{}
+
+			sm, err := NewSessionManager(tc.assistantID, &db, &openaiCli, &trelloCli)
 			require.NoError(t, err, tc.expectError)
 
 			assert.NotNil(t, sm)
@@ -172,10 +176,10 @@ func TestSessionManager_SendMessage(t *testing.T) {
 				},
 			}
 
-			sm, err := NewSessionManager("validID", &openaiCli)
+			sm, err := NewSessionManager("validID", &db, &openaiCli, &trelloCli)
 			require.NoError(t, err)
 
-			_, err = sm.SendMessage(context.TODO(), &db, &trelloCli, tc.userID, tc.message)
+			_, err = sm.SendMessage(context.TODO(), tc.userID, tc.message)
 			require.NoError(t, err, tc.expectError)
 		})
 	}
@@ -209,7 +213,11 @@ func TestSessionManager_getOrCreateSession(t *testing.T) {
 				},
 			}
 
-			sm, err := NewSessionManager("validID", &openaiCli)
+			trelloCli := mockTrelloClient{}
+
+			db := mockDB{}
+
+			sm, err := NewSessionManager("validID", &db, &openaiCli, &trelloCli)
 			require.NoError(t, err)
 
 			session, err := sm.getOrCreateSession(context.TODO(), tc.userID)

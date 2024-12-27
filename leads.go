@@ -20,14 +20,14 @@ type createLeadInput struct {
 	Phone string
 }
 
-func createLead(ctx context.Context, db db, trelloCli trelloClient, input *createLeadInput) error {
+func (sm *SessionManager) createLead(ctx context.Context, input *createLeadInput) error {
 	id, err := idutil.NewID()
 	if err != nil {
 		return fmt.Errorf("could not generate ID: %w", err)
 	}
 
 	go func() {
-		if _, err := db.Exec(ctx, `
+		if _, err := sm.db.Exec(ctx, `
 			INSERT INTO leads (id, name, phone)
 			VALUES ($1, $2, $3)
 		`, id, input.Name, input.Phone); err != nil {
@@ -48,7 +48,7 @@ func createLead(ctx context.Context, db db, trelloCli trelloClient, input *creat
 			now.Format("02/01/2006 às 15:04"),
 		)
 
-		if err := trelloCli.CreateCard(ctx, trello.TrelloCard{
+		if err := sm.trelloCli.CreateCard(ctx, trello.TrelloCard{
 			Name:        input.Name,
 			Description: description,
 			ListID:      newLeadsTrelloLane,
