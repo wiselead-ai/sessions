@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"encore.dev/storage/sqldb"
-	"github.com/wiselead-ai/openaicli"
+	"github.com/wiselead-ai/openai"
 	"github.com/wiselead-ai/trello"
 )
 
@@ -21,16 +21,16 @@ const (
 )
 
 type (
-	openaiCli interface {
-		GetAssistant(ctx context.Context, assistantID string) (*openaicli.Assistant, error)
-		AddMessage(ctx context.Context, in openaicli.CreateMessageInput) error
-		RunThread(ctx context.Context, threadID, assistantID string) (*openaicli.Run, error)
+	openaiClient interface {
+		GetAssistant(ctx context.Context, assistantID string) (*openai.Assistant, error)
+		AddMessage(ctx context.Context, in openai.CreateMessageInput) error
+		RunThread(ctx context.Context, threadID, assistantID string) (*openai.Run, error)
 		WaitForRun(ctx context.Context, threadID, runID string) error
-		GetMessages(ctx context.Context, threadID string) (*openaicli.ThreadMessageList, error)
-		CreateThread(ctx context.Context) (*openaicli.Thread, error)
-		GetRun(ctx context.Context, threadID, runID string) (*openaicli.Run, error)
-		SubmitToolOutputs(ctx context.Context, threadID, runID string, outputs []openaicli.ToolOutput) error
-		GetRunSteps(ctx context.Context, threadID, runID string) (*openaicli.RunSteps, error)
+		GetMessages(ctx context.Context, threadID string) (*openai.ThreadMessageList, error)
+		CreateThread(ctx context.Context) (*openai.Thread, error)
+		GetRun(ctx context.Context, threadID, runID string) (*openai.Run, error)
+		SubmitToolOutputs(ctx context.Context, threadID, runID string, outputs []openai.ToolOutput) error
+		GetRunSteps(ctx context.Context, threadID, runID string) (*openai.RunSteps, error)
 	}
 
 	trelloClient interface {
@@ -52,13 +52,13 @@ type (
 type SessionManager struct {
 	mu              sync.RWMutex
 	sessions        map[string]*Session
-	assistant       *openaicli.Assistant
-	openaiCli       openaiCli
+	assistant       *openai.Assistant
+	openaiCli       openaiClient
 	cleanupInterval time.Duration
 	sessionTimeout  time.Duration
 }
 
-func NewSessionManager(assistantID string, openaiCli openaiCli) (*SessionManager, error) {
+func NewSessionManager(assistantID string, openaiCli openaiClient) (*SessionManager, error) {
 	assist, err := openaiCli.GetAssistant(context.Background(), assistantID)
 	if err != nil {
 		return nil, fmt.Errorf("could not get assistant: %w", err)
@@ -108,10 +108,10 @@ func (sm *SessionManager) SendMessage(ctx context.Context, db db, trelloCli trel
 		message = fmt.Sprintf("(Context: User's name is %s) %s", session.CollectedName, message)
 	}
 
-	if err := sm.openaiCli.AddMessage(ctx, openaicli.CreateMessageInput{
+	if err := sm.openaiCli.AddMessage(ctx, openai.CreateMessageInput{
 		ThreadID: session.ThreadID,
-		Message: openaicli.ThreadMessage{
-			Role:    openaicli.RoleUser,
+		Message: openai.ThreadMessage{
+			Role:    openai.RoleUser,
 			Content: message,
 		},
 	}); err != nil {
@@ -137,9 +137,9 @@ func (sm *SessionManager) processRun(ctx context.Context, db db, trelloCli trell
 		}
 
 		switch currentRun.Status {
-		case openaicli.RunStatusCompleted:
+		case openai.RunStatusCompleted:
 			return nil
-		case openaicli.RunStatusRequiresAction:
+		case openai.RunStatusRequiresAction:
 			if currentRun.RequiredAction == nil {
 				return fmt.Errorf("invalid state: requires_action but no action specified")
 			}
@@ -147,11 +147,11 @@ func (sm *SessionManager) processRun(ctx context.Context, db db, trelloCli trell
 				return fmt.Errorf("could not handle function calling: %w", err)
 			}
 			time.Sleep(1 * time.Second)
-		case openaicli.RunStatusFailed, openaicli.RunStatusCancelled, openaicli.RunStatusExpired:
+		case openai.RunStatusFailed, openai.RunStatusCancelled, openai.RunStatusExpired:
 			return fmt.Errorf("run failed with status: %s and error: %v", currentRun.Status, currentRun.LastError)
 		}
 
-		if currentRun.Status != openaicli.RunStatusCompleted {
+		if currentRun.Status != openai.RunStatusCompleted {
 			if err := sm.openaiCli.WaitForRun(ctx, threadID, runID); err != nil {
 				if strings.Contains(err.Error(), "requires_action") {
 					continue
@@ -185,7 +185,7 @@ func (sm *SessionManager) getAssistantResponse(ctx context.Context, threadID str
 	return finalResponse.String(), nil
 }
 
-func (sm *SessionManager) handleFunctionCalling(ctx context.Context, db db, trelloCli trelloClient, threadID string, run *openaicli.Run) error {
+func (sm *SessionManager) handleFunctionCalling(ctx context.Context, db db, trelloCli trelloClient, threadID string, run *openai.Run) error {
 	if run.RequiredAction == nil {
 		return nil
 	}
@@ -195,7 +195,7 @@ func (sm *SessionManager) handleFunctionCalling(ctx context.Context, db db, trel
 		return fmt.Errorf("could not get run steps: %w", err)
 	}
 
-	var toolCalls []openaicli.ToolCall
+	var toolCalls []openai.ToolCall
 	if len(run.RequiredAction.ToolCalls) > 0 {
 		toolCalls = run.RequiredAction.ToolCalls
 	} else if len(steps.Data) > 0 && steps.Data[0].StepDetails != nil {
@@ -206,10 +206,10 @@ func (sm *SessionManager) handleFunctionCalling(ctx context.Context, db db, trel
 		return nil
 	}
 
-	var toolOutputs []openaicli.ToolOutput
+	var toolOutputs []openai.ToolOutput
 
 	for _, toolCall := range toolCalls {
-		if toolCall.Type != openaicli.ToolTypeFunction {
+		if toolCall.Type != openai.ToolTypeFunction {
 			continue
 		}
 
@@ -255,7 +255,7 @@ func (sm *SessionManager) handleFunctionCalling(ctx context.Context, db db, trel
 				return fmt.Errorf("could not create lead: %w", err)
 			}
 
-			toolOutputs = append(toolOutputs, openaicli.ToolOutput{
+			toolOutputs = append(toolOutputs, openai.ToolOutput{
 				ToolCallID: toolCall.ID,
 				Output:     "Lead created successfully",
 			})
