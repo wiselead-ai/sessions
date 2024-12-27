@@ -60,11 +60,11 @@ func (m *mockOpenAIClient) GetRunSteps(ctx context.Context, threadID, runID stri
 }
 
 type mockTrelloClient struct {
-	createCardFn func(card trello.TrelloCard) error
+	createCardFn func(ctx context.Context, card trello.TrelloCard) error
 }
 
-func (m *mockTrelloClient) CreateCard(card trello.TrelloCard) error {
-	return m.createCardFn(card)
+func (m *mockTrelloClient) CreateCard(ctx context.Context, card trello.TrelloCard) error {
+	return m.createCardFn(ctx, card)
 }
 
 type mockDB struct {
@@ -161,7 +161,7 @@ func TestSessionManager_SendMessage(t *testing.T) {
 			}
 
 			trelloCli := mockTrelloClient{
-				createCardFn: func(card trello.TrelloCard) error {
+				createCardFn: func(ctx context.Context, card trello.TrelloCard) error {
 					return nil
 				},
 			}
