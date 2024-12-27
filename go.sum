@@ -34,8 +34,8 @@ github.com/wiselead-ai/openai v0.0.0-20241227092546-cdf0992fd9ad h1:4M2f4eLMic/E
 github.com/wiselead-ai/openai v0.0.0-20241227092546-cdf0992fd9ad/go.mod h1:9Hxnd8jBzvk2I28UdyqbAmt88aIfqvR2qx95nyYxmRo=
 github.com/wiselead-ai/pkg v0.0.0-20241226181225-0c16f3ebb31f h1:0Gt233WsBPYmA5zs02gnJeNKUQvWpYX6Wa9JHhzF7kU=
 github.com/wiselead-ai/pkg v0.0.0-20241226181225-0c16f3ebb31f/go.mod h1:tmYbyTsVNY4/zAZPSMRdOruQjzGtQesFzAMm8uxjUrY=
-github.com/wiselead-ai/trello v0.0.0-20241226175938-1187fe455f20 h1:nzv6vnpoKL3iUEyrU1NHmqr8gBjWWvJtUac4kt8OPq0=
-github.com/wiselead-ai/trello v0.0.0-20241226175938-1187fe455f20/go.mod h1:pH9w01mVykxck8Zahi0ARCCCqQwlyHy9v7csOSDfabw=
+github.com/wiselead-ai/trello v0.0.0-20241227102754-44d5ab461dc1 h1:/IluDOKPsNrU4sjHnUUQFzlODDkIPDIKFET0wdNX4I4=
+github.com/wiselead-ai/trello v0.0.0-20241227102754-44d5ab461dc1/go.mod h1:2QvV/Pp/4eCyo1j0UsV0GC+AMtBpDpMzN56YrUx69xA=
 golang.org/x/crypto v0.31.0 h1:ihbySMvVjLAeSH1IbfcRTkD/iNscyz8rGzjF/E5hV6U=
 golang.org/x/crypto v0.31.0/go.mod h1:kDsLvtWBEx7MV9tJOj9bnXsPbxwJQ6csT/x4KIN4Ssk=
 golang.org/x/sync v0.10.0 h1:3NQrjDixjgGwUOCaF8w2+VYHv0Ve/vGYSbdkTa98gmQ=

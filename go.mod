@@ -7,7 +7,7 @@ require (
 	github.com/stretchr/testify v1.10.0
 	github.com/wiselead-ai/openai v0.0.0-20241227092546-cdf0992fd9ad
 	github.com/wiselead-ai/pkg v0.0.0-20241226181225-0c16f3ebb31f
-	github.com/wiselead-ai/trello v0.0.0-20241226175938-1187fe455f20
+	github.com/wiselead-ai/trello v0.0.0-20241227102754-44d5ab461dc1
 )
 
 require (
