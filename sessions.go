@@ -53,7 +53,7 @@ type (
 type SessionManager struct {
 	mu              sync.RWMutex
 	sessions        map[string]*Session
-	assistant       *openai.Assistant
+	assistantID     string
 	openaiCli       openaiClient
 	trelloCli       trelloClient
 	db              db
@@ -62,14 +62,9 @@ type SessionManager struct {
 }
 
 func NewSessionManager(assistantID string, db db, openaiCli openaiClient, trelloCli trelloClient) (*SessionManager, error) {
-	assist, err := openaiCli.GetAssistant(context.Background(), assistantID)
-	if err != nil {
-		return nil, fmt.Errorf("could not get assistant: %w", err)
-	}
-
 	sm := &SessionManager{
 		sessions:        make(map[string]*Session),
-		assistant:       assist,
+		assistantID:     assistantID,
 		openaiCli:       openaiCli,
 		trelloCli:       trelloCli,
 		db:              db,
@@ -107,8 +102,8 @@ func (sm *SessionManager) SendMessage(ctx context.Context, userID, message strin
 	if err != nil {
 		return "", fmt.Errorf("could not get or create session: %w", err)
 	}
+	session.LastAccessedAt = time.Now()
 
-	// If name is collected, append this context to the message
 	if session.NameCollected {
 		message = fmt.Sprintf("(Context: User's name is %s) %s", session.CollectedName, message)
 	}
@@ -120,10 +115,24 @@ func (sm *SessionManager) SendMessage(ctx context.Context, userID, message strin
 			Content: message,
 		},
 	}); err != nil {
-		return "", fmt.Errorf("could not add message: %w", err)
+		// Exploration: Do not try this at home
+		if strings.Contains(err.Error(), "Can't add messages to thread") {
+			time.Sleep(3 * time.Second)
+			if err := sm.openaiCli.AddMessage(ctx, openai.CreateMessageInput{
+				ThreadID: session.ThreadID,
+				Message: openai.ThreadMessage{
+					Role:    openai.RoleUser,
+					Content: message,
+				},
+			}); err != nil {
+				return "", fmt.Errorf("could not add message: %w", err)
+			}
+		} else {
+			return "", fmt.Errorf("could not add message: %w", err)
+		}
 	}
 
-	run, err := sm.openaiCli.RunThread(ctx, session.ThreadID, sm.assistant.ID)
+	run, err := sm.openaiCli.RunThread(ctx, session.ThreadID, sm.assistantID)
 	if err != nil {
 		return "", fmt.Errorf("could not run thread: %w", err)
 	}
@@ -131,7 +140,14 @@ func (sm *SessionManager) SendMessage(ctx context.Context, userID, message strin
 	if err := sm.processRun(ctx, session.ThreadID, run.ID); err != nil {
 		return "", err
 	}
-	return sm.getAssistantResponse(ctx, session.ThreadID)
+
+	response, err := sm.getAssistantResponse(ctx, session.ThreadID)
+	if err != nil {
+		return "", err
+	}
+
+	session.LastAccessedAt = time.Now()
+	return response, nil
 }
 
 func (sm *SessionManager) processRun(ctx context.Context, threadID, runID string) error {
