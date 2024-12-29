@@ -2,13 +2,13 @@ package sessions
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
 	"time"
 
-	"encore.dev/storage/sqldb"
 	"github.com/wiselead-ai/openai"
 	"github.com/wiselead-ai/trello"
 )
@@ -38,7 +38,7 @@ type (
 	}
 
 	db interface {
-		Exec(ctx context.Context, query string, args ...any) (_ sqldb.ExecResult, _ error)
+		ExecContext(ctx context.Context, query string, args ...any) (_ sql.Result, err error)
 	}
 
 	Session struct {

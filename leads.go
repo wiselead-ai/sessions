@@ -27,7 +27,7 @@ func (sm *SessionManager) createLead(ctx context.Context, input *createLeadInput
 	}
 
 	go func() {
-		if _, err := sm.db.Exec(ctx, `
+		if _, err := sm.db.ExecContext(ctx, `
 			INSERT INTO leads (id, name, phone)
 			VALUES ($1, $2, $3)
 		`, id, input.Name, input.Phone); err != nil {
