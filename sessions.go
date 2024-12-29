@@ -69,7 +69,7 @@ func NewSessionManager(assistantID string, db db, openaiCli openaiClient, trello
 		trelloCli:       trelloCli,
 		db:              db,
 		cleanupInterval: 1 * time.Hour,
-		sessionTimeout:  24 * time.Hour,
+		sessionTimeout:  2 * time.Hour,
 	}
 
 	go sm.cleanupLoop()
