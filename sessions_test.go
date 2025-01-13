@@ -2,9 +2,9 @@ package sessions
 
 import (
 	"context"
-	"database/sql"
 	"testing"
 
+	"encore.dev/storage/sqldb"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/wiselead-ai/openai"
@@ -68,11 +68,11 @@ func (m *mockTrelloClient) CreateCard(ctx context.Context, card trello.TrelloCar
 }
 
 type mockDB struct {
-	execContextFn func(ctx context.Context, query string, args ...any) (sql.Result, error)
+	execFn func(ctx context.Context, query string, args ...any) (_ sqldb.ExecResult, _ error)
 }
 
-func (m *mockDB) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
-	return m.execContextFn(ctx, query, args...)
+func (m *mockDB) Exec(ctx context.Context, query string, args ...any) (sqldb.ExecResult, error) {
+	return m.execFn(ctx, query, args...)
 }
 
 func TestNewSessionManager(t *testing.T) {
@@ -171,7 +171,7 @@ func TestSessionManager_SendMessage(t *testing.T) {
 			}
 
 			db := mockDB{
-				execContextFn: func(ctx context.Context, query string, args ...any) (sql.Result, error) {
+				execFn: func(ctx context.Context, query string, args ...any) (_ sqldb.ExecResult, _ error) {
 					return nil, nil
 				},
 			}
