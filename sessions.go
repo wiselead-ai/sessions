@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"encore.dev/rlog"
 	"encore.dev/storage/sqldb"
 	"github.com/wiselead-ai/openai"
 	"github.com/wiselead-ai/trello"
@@ -47,6 +48,7 @@ type (
 		LastAccessedAt time.Time
 		NameCollected  bool
 		CollectedName  string
+		LeadRegistered bool // Add this field
 	}
 )
 
@@ -98,38 +100,58 @@ func (sm *SessionManager) cleanup() {
 }
 
 func (sm *SessionManager) SendMessage(ctx context.Context, userID, message string) (string, error) {
+	rlog.Info("Sending message", "userID", userID, "message", message)
 	session, err := sm.getOrCreateSession(ctx, userID)
 	if err != nil {
 		return "", fmt.Errorf("could not get or create session: %w", err)
 	}
 	session.LastAccessedAt = time.Now()
 
+	// Check for active runs before proceeding
+	active, runID, err := sm.hasActiveRun(ctx, session.ThreadID)
+	if err != nil {
+		return "", fmt.Errorf("could not check active runs: %w", err)
+	}
+
+	if active {
+		rlog.Info("Cancelling active run", "runID", runID)
+		// Wait a bit before proceeding
+		time.Sleep(2 * time.Second)
+	}
+
 	if session.NameCollected {
 		message = fmt.Sprintf("(Context: User's name is %s) %s", session.CollectedName, message)
 	}
 
-	if err := sm.openaiCli.AddMessage(ctx, openai.CreateMessageInput{
-		ThreadID: session.ThreadID,
-		Message: openai.ThreadMessage{
-			Role:    openai.RoleUser,
-			Content: message,
-		},
-	}); err != nil {
-		// Exploration: Do not try this at home
-		if strings.Contains(err.Error(), "Can't add messages to thread") {
-			time.Sleep(3 * time.Second)
-			if err := sm.openaiCli.AddMessage(ctx, openai.CreateMessageInput{
-				ThreadID: session.ThreadID,
-				Message: openai.ThreadMessage{
-					Role:    openai.RoleUser,
-					Content: message,
-				},
-			}); err != nil {
-				return "", fmt.Errorf("could not add message: %w", err)
-			}
-		} else {
-			return "", fmt.Errorf("could not add message: %w", err)
+	// Try to add message with retries
+	maxRetries := 5
+	backoff := 2 * time.Second
+	var addMessageErr error
+
+	for i := 0; i < maxRetries; i++ {
+		addMessageErr = sm.openaiCli.AddMessage(ctx, openai.CreateMessageInput{
+			ThreadID: session.ThreadID,
+			Message: openai.ThreadMessage{
+				Role:    openai.RoleUser,
+				Content: message,
+			},
+		})
+
+		if addMessageErr == nil {
+			break
 		}
+
+		if !strings.Contains(addMessageErr.Error(), "Can't add messages to thread") {
+			return "", fmt.Errorf("could not add message: %w", addMessageErr)
+		}
+
+		// Wait before retrying
+		time.Sleep(backoff)
+		backoff *= 2 // Exponential backoff
+	}
+
+	if addMessageErr != nil {
+		return "", fmt.Errorf("failed to add message after retries: %w", addMessageErr)
 	}
 
 	run, err := sm.openaiCli.RunThread(ctx, session.ThreadID, sm.assistantID)
@@ -137,8 +159,26 @@ func (sm *SessionManager) SendMessage(ctx context.Context, userID, message strin
 		return "", fmt.Errorf("could not run thread: %w", err)
 	}
 
-	if err := sm.processRun(ctx, session.ThreadID, run.ID); err != nil {
-		return "", err
+	// Use a separate context for run processing with longer timeout
+	runCtx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	maxRetries = 3
+	var processErr error
+	for i := 0; i < maxRetries; i++ {
+		processErr = sm.processRun(runCtx, session.ThreadID, run.ID)
+		if processErr == nil {
+			break
+		}
+		if i < maxRetries-1 {
+			// Add exponential backoff
+			backoff := time.Second * time.Duration(1<<uint(i))
+			time.Sleep(backoff)
+			continue
+		}
+	}
+	if processErr != nil {
+		return "", fmt.Errorf("failed to process run after retries: %w", processErr)
 	}
 
 	response, err := sm.getAssistantResponse(ctx, session.ThreadID)
@@ -150,60 +190,69 @@ func (sm *SessionManager) SendMessage(ctx context.Context, userID, message strin
 	return response, nil
 }
 
-func (sm *SessionManager) processRun(ctx context.Context, threadID, runID string) error {
-	for {
-		currentRun, err := sm.openaiCli.GetRun(ctx, threadID, runID)
-		if err != nil {
-			return fmt.Errorf("could not get run status: %w", err)
-		}
-
-		switch currentRun.Status {
-		case openai.RunStatusCompleted:
-			return nil
-		case openai.RunStatusRequiresAction:
-			if currentRun.RequiredAction == nil {
-				return fmt.Errorf("invalid state: requires_action but no action specified")
-			}
-			if err := sm.handleFunctionCalling(ctx, threadID, currentRun); err != nil {
-				return fmt.Errorf("could not handle function calling: %w", err)
-			}
-			time.Sleep(1 * time.Second)
-		case openai.RunStatusFailed, openai.RunStatusCancelled, openai.RunStatusExpired:
-			return fmt.Errorf("run failed with status: %s and error: %v", currentRun.Status, currentRun.LastError)
-		}
-
-		if currentRun.Status != openai.RunStatusCompleted {
-			if err := sm.openaiCli.WaitForRun(ctx, threadID, runID); err != nil {
-				if strings.Contains(err.Error(), "requires_action") {
-					continue
-				}
-				return fmt.Errorf("could not wait for run: %w", err)
-			}
-		}
-	}
-}
-
-func (sm *SessionManager) getAssistantResponse(ctx context.Context, threadID string) (string, error) {
+// Add new helper method to check for active runs
+func (sm *SessionManager) hasActiveRun(ctx context.Context, threadID string) (bool, string, error) {
 	messages, err := sm.openaiCli.GetMessages(ctx, threadID)
 	if err != nil {
-		return "", fmt.Errorf("could not get messages: %w", err)
+		return false, "", fmt.Errorf("could not get messages: %w", err)
 	}
 
+	// If no messages, no active runs
 	if len(messages.Data) == 0 {
-		return "", fmt.Errorf("no messages returned")
+		return false, "", nil
 	}
 
-	var finalResponse strings.Builder
-	mostRecentMsg := messages.Data[0]
-	if mostRecentMsg.Role == roleAssistant && len(mostRecentMsg.Content) > 0 {
-		for _, content := range mostRecentMsg.Content {
-			if content.Type == messageTextType {
-				finalResponse.WriteString(content.Text.Value)
-				finalResponse.WriteString("\n")
+	// Get all runs for the thread and check their status
+	latestMsg := messages.Data[0]
+
+	// If there's no run associated with the message, assume no active run
+	if latestMsg.RunID == "" {
+		return false, "", nil
+	}
+
+	run, err := sm.openaiCli.GetRun(ctx, threadID, latestMsg.RunID)
+	if err != nil {
+		return false, "", fmt.Errorf("could not get run status: %w", err)
+	}
+
+	// Consider these statuses as active
+	active := run.Status == openai.RunStatusQueued ||
+		run.Status == openai.RunStatusInProgress ||
+		run.Status == openai.RunStatusRequiresAction
+
+	return active, latestMsg.RunID, nil
+}
+
+func (sm *SessionManager) processRun(ctx context.Context, threadID, runID string) error {
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			currentRun, err := sm.openaiCli.GetRun(ctx, threadID, runID)
+			if err != nil {
+				return fmt.Errorf("could not get run status: %w", err)
+			}
+
+			switch currentRun.Status {
+			case openai.RunStatusCompleted:
+				return nil
+			case openai.RunStatusRequiresAction:
+				if err := sm.handleFunctionCalling(ctx, threadID, currentRun); err != nil {
+					return fmt.Errorf("could not handle function calling: %w", err)
+				}
+			case openai.RunStatusFailed, openai.RunStatusCancelled, openai.RunStatusExpired:
+				return fmt.Errorf("run failed with status: %s and error: %v", currentRun.Status, currentRun.LastError)
+			case openai.RunStatusQueued, openai.RunStatusInProgress:
+				continue
+			default:
+				return fmt.Errorf("unknown run status: %s", currentRun.Status)
 			}
 		}
 	}
-	return finalResponse.String(), nil
 }
 
 func (sm *SessionManager) handleFunctionCalling(ctx context.Context, threadID string, run *openai.Run) error {
@@ -227,7 +276,10 @@ func (sm *SessionManager) handleFunctionCalling(ctx context.Context, threadID st
 		return nil
 	}
 
-	var toolOutputs []openai.ToolOutput
+	var (
+		toolOutputs       []openai.ToolOutput
+		leadToolProcessed bool
+	)
 
 	for _, toolCall := range toolCalls {
 		if toolCall.Type != openai.ToolTypeFunction {
@@ -236,23 +288,33 @@ func (sm *SessionManager) handleFunctionCalling(ctx context.Context, threadID st
 
 		switch toolCall.Function.Name {
 		case "lead":
-			var args struct {
-				Name string `json:"name"`
-			}
-			if err := json.Unmarshal([]byte(toolCall.Function.Arguments), &args); err != nil {
-				return fmt.Errorf("could not parse lead arguments: %w", err)
+			if leadToolProcessed {
+				rlog.Info("Lead tool already processed in this run, skipping", "threadID", threadID, "runID", run.ID)
+				continue
 			}
 
-			// Find session by threadID
+			// Get session once at the beginning
 			sm.mu.Lock()
-			var userPhone string
-			var session *Session
+
+			var (
+				userPhone string
+				session   *Session
+			)
+
 			for _, sess := range sm.sessions {
 				if sess.ThreadID == threadID {
-					userPhone = sess.UserID // UserID contains the WhatsApp number
+					userPhone = sess.UserID
 					session = sess
 					break
 				}
+			}
+
+			// Check for already registered lead
+			if session != nil && session.LeadRegistered {
+				sm.mu.Unlock()
+				rlog.Info("Lead already registered for this session, skipping",
+					"threadID", threadID)
+				return nil
 			}
 			sm.mu.Unlock()
 
@@ -260,26 +322,48 @@ func (sm *SessionManager) handleFunctionCalling(ctx context.Context, threadID st
 				return fmt.Errorf("no session found for thread %s", threadID)
 			}
 
-			// Update session with name information
-			session.NameCollected = true
-			session.CollectedName = args.Name
+			var args struct {
+				Name    string `json:"name"`
+				Title   string `json:"title"`
+				Summary string `json:"summary"`
+			}
+			rlog.Info("Received lead function call",
+				"arguments", toolCall.Function.Arguments,
+				"threadID", threadID)
 
-			if userPhone == "" {
-				return fmt.Errorf("no session found for thread %s", threadID)
+			if err := json.Unmarshal([]byte(toolCall.Function.Arguments), &args); err != nil {
+				return fmt.Errorf("could not parse lead arguments: %w", err)
 			}
 
-			if err := sm.createLead(ctx, &createLeadInput{
-				Name: args.Name,
-				// Clean up the phone number by removing the WhatsApp suffix.
-				Phone: strings.Split(strings.Split(userPhone, "@")[0], ":")[0],
+			rlog.Info("Parsed lead data",
+				"name", args.Name,
+				"title", args.Title,
+				"summary", args.Summary)
+
+			leadCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+			defer cancel()
+
+			if err := sm.createLead(leadCtx, &createLeadInput{
+				Name:    args.Name,
+				Phone:   strings.Split(strings.Split(userPhone, "@")[0], ":")[0],
+				Title:   args.Title,
+				Summary: args.Summary,
 			}); err != nil {
 				return fmt.Errorf("could not create lead: %w", err)
 			}
+
+			// Update session after successful lead creation
+			sm.mu.Lock()
+			session.NameCollected = true
+			session.CollectedName = args.Name
+			session.LeadRegistered = true
+			sm.mu.Unlock()
 
 			toolOutputs = append(toolOutputs, openai.ToolOutput{
 				ToolCallID: toolCall.ID,
 				Output:     "Lead created successfully",
 			})
+			leadToolProcessed = true
 		}
 	}
 
@@ -313,4 +397,41 @@ func (sm *SessionManager) getOrCreateSession(ctx context.Context, userID string)
 	sm.sessions[userID] = &sess
 
 	return &sess, nil
+}
+
+func (sm *SessionManager) isRunActive(ctx context.Context, threadID, runID string) (bool, error) {
+	run, err := sm.openaiCli.GetRun(ctx, threadID, runID)
+	if err != nil {
+		return false, fmt.Errorf("could not get run status: %w", err)
+	}
+
+	switch run.Status {
+	case openai.RunStatusCompleted, openai.RunStatusFailed, openai.RunStatusCancelled, openai.RunStatusExpired:
+		return false, nil
+	default:
+		return true, nil
+	}
+}
+
+func (sm *SessionManager) getAssistantResponse(ctx context.Context, threadID string) (string, error) {
+	messages, err := sm.openaiCli.GetMessages(ctx, threadID)
+	if err != nil {
+		return "", fmt.Errorf("could not get messages: %w", err)
+	}
+
+	if len(messages.Data) == 0 {
+		return "", fmt.Errorf("no messages returned")
+	}
+
+	var finalResponse strings.Builder
+	mostRecentMsg := messages.Data[0]
+	if mostRecentMsg.Role == roleAssistant && len(mostRecentMsg.Content) > 0 {
+		for _, content := range mostRecentMsg.Content {
+			if content.Type == messageTextType {
+				finalResponse.WriteString(content.Text.Value)
+				finalResponse.WriteString("\n")
+			}
+		}
+	}
+	return finalResponse.String(), nil
 }

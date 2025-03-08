@@ -3,9 +3,9 @@ package sessions
 import (
 	"context"
 	"fmt"
-	"os"
 	"time"
 
+	"encore.dev/rlog"
 	"github.com/wiselead-ai/pkg/idutil"
 	"github.com/wiselead-ai/trello"
 )
@@ -16,8 +16,10 @@ const (
 )
 
 type createLeadInput struct {
-	Name  string
-	Phone string
+	Name    string
+	Phone   string
+	Title   string
+	Summary string
 }
 
 func (sm *SessionManager) createLead(ctx context.Context, input *createLeadInput) error {
@@ -26,38 +28,40 @@ func (sm *SessionManager) createLead(ctx context.Context, input *createLeadInput
 		return fmt.Errorf("could not generate ID: %w", err)
 	}
 
-	go func() {
-		if _, err := sm.db.Exec(ctx, `
-			INSERT INTO leads (id, name, phone)
-			VALUES ($1, $2, $3)
-		`, id, input.Name, input.Phone); err != nil {
-			fmt.Fprintf(os.Stderr, "could not insert lead: %v\n", err)
-			return
-		}
+	if _, err := sm.db.Exec(ctx, `
+		INSERT INTO leads (id, name, phone)
+		VALUES ($1, $2, $3)
+	`, id, input.Name, input.Phone); err != nil {
+		return fmt.Errorf("could not insert lead: %w", err)
+	}
 
+	go func() {
 		loc, err := time.LoadLocation(brLocation)
 		if err != nil {
 			loc = time.UTC
 		}
 
-		now := time.Now().In(loc)
 		description := fmt.Sprintf(
-			"Nome: %s\nTelefone: %s\nCriado em: %s",
+			"Nome: %s\n"+
+				"Telefone: %s\n\n"+
+				"Interesse: %s\n"+
+				"Detalhes: %s\n\n"+
+				"Data: %s",
 			input.Name,
 			input.Phone,
-			now.Format("02/01/2006 às 15:04"),
+			input.Title,
+			input.Summary,
+			time.Now().In(loc).Format("02/01/2006 às 15:04"),
 		)
 
 		if err := sm.trelloCli.CreateCard(ctx, trello.TrelloCard{
-			Name:        input.Name,
+			Name:        fmt.Sprintf("%s - %s", input.Name, input.Title),
 			Description: description,
 			ListID:      newLeadsTrelloLane,
 		}); err != nil {
-			fmt.Fprintf(os.Stderr, "could not create Trello card: %v\n", err)
+			rlog.Error("Could not create Trello card", "error", err)
 			return
 		}
-
-		fmt.Printf("Created lead - ID: %s, Name: %s, Phone: %s\n", id, input.Name, input.Phone)
 	}()
 	return nil
 }
