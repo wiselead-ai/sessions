@@ -48,7 +48,7 @@ type (
 		LastAccessedAt time.Time
 		NameCollected  bool
 		CollectedName  string
-		LeadRegistered bool // Add this field
+		LeadRegistered bool
 	}
 )
 
@@ -124,7 +124,7 @@ func (sm *SessionManager) SendMessage(ctx context.Context, userID, message strin
 	}
 
 	// Try to add message with retries
-	maxRetries := 5
+	maxRetries := 10
 	backoff := 2 * time.Second
 	var addMessageErr error
 
@@ -163,7 +163,7 @@ func (sm *SessionManager) SendMessage(ctx context.Context, userID, message strin
 	runCtx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
-	maxRetries = 3
+	maxRetries = 10
 	var processErr error
 	for i := 0; i < maxRetries; i++ {
 		processErr = sm.processRun(runCtx, session.ThreadID, run.ID)
@@ -312,8 +312,7 @@ func (sm *SessionManager) handleFunctionCalling(ctx context.Context, threadID st
 			// Check for already registered lead
 			if session != nil && session.LeadRegistered {
 				sm.mu.Unlock()
-				rlog.Info("Lead already registered for this session, skipping",
-					"threadID", threadID)
+				rlog.Info("Lead already registered for this session, skipping", "threadID", threadID)
 				return nil
 			}
 			sm.mu.Unlock()
@@ -414,6 +413,9 @@ func (sm *SessionManager) isRunActive(ctx context.Context, threadID, runID strin
 }
 
 func (sm *SessionManager) getAssistantResponse(ctx context.Context, threadID string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+
 	messages, err := sm.openaiCli.GetMessages(ctx, threadID)
 	if err != nil {
 		return "", fmt.Errorf("could not get messages: %w", err)
